@@ -1,0 +1,296 @@
+﻿<#@ assembly name="System.Core"#>
+<#@ assembly name="System.Data" #>
+<#@ assembly name="System.xml" #>
+<#@ assembly name="$(SolutionDir)\Reference\MySql.Data.Dll"  #>
+<#@ import namespace="System"#>
+<#@ import namespace="System.Collections.Generic"#>
+<#@ import namespace="System.Data"#>
+<#@ import namespace="System.Data.SqlClient"#>
+<#@ import namespace="MySql.Data.MySqlClient"#>
+<#+ 
+#region Code
+    public class DBSchemaFactory
+    {
+        static readonly string DatabaseType = "MySql";
+        public static IDBSchema GetDBSchema()
+        {
+            IDBSchema dbSchema;
+            switch (DatabaseType) 
+            {
+                case "SqlServer":
+                    {
+                        dbSchema =new SqlServerSchema();
+                        break;
+                    }
+                case "MySql":
+                    {
+                        dbSchema = new MySqlSchema();
+                        break;
+                    }
+                default: 
+                    {
+                        throw new ArgumentException("The input argument of DatabaseType is invalid!");
+                    }
+            }
+            return dbSchema;
+        }
+    }
+
+    public interface IDBSchema : IDisposable
+    {
+        List<string> GetTablesList();
+
+        Table GetTableMetadata(string tableName);
+    }
+
+    public class SqlServerSchema : IDBSchema
+    {
+        public string ConnectionString = "Server=192.168.190.253;Port=3306;Database=mytest;Uid=root;";
+
+        public SqlConnection conn;
+
+        public SqlServerSchema()
+        {
+            conn = new SqlConnection(ConnectionString);
+            conn.Open();
+        }
+
+        public List<string> GetTablesList()
+        {
+            DataTable dt = conn.GetSchema("Tables");
+            List<string> list = new List<string>();
+            foreach (DataRow row in dt.Rows)
+            {
+                list.Add(row["TABLE_NAME"].ToString());
+            }
+            return list;
+        }
+
+        public Table GetTableMetadata(string tableName)
+        {
+            string selectCmdText = string.Format("SELECT * FROM {0}", tableName); ;
+            SqlCommand command = new SqlCommand(selectCmdText, conn);
+            SqlDataAdapter ad = new SqlDataAdapter(command);
+            System.Data.DataSet ds = new DataSet();
+            ad.FillSchema(ds, SchemaType.Mapped, tableName);
+
+            Table table = new Table(ds.Tables[0]);
+            return table;
+        }
+
+        public void Dispose()
+        {
+            if (conn != null)
+                conn.Close();
+        }
+    }
+
+    public class MySqlSchema : IDBSchema
+    {
+		public string ConnectionString = "Server=192.168.190.253;Port=3306;Database=mytest;Uid=root;";
+
+        public MySqlConnection conn;
+
+        public MySqlSchema()
+        {
+            conn = new MySqlConnection(ConnectionString);
+            conn.Open();
+        }
+
+        public List<string> GetTablesList()
+        {
+		
+            string sql = "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'htadm'";   //将数据库中的表和视图进行实例化
+            MySqlDataAdapter da = new MySqlDataAdapter(sql, conn);
+            DataTable dt = new DataTable();
+            da.Fill(dt);
+
+           // DataTable dt = conn.GetSchema("Tables");
+            List<string> list = new List<string>();
+            foreach (DataRow row in dt.Rows)
+            {
+                list.Add(row["TABLE_NAME"].ToString());
+            }
+            return list;
+        }
+
+        public Table GetTableMetadata(string tableName)
+        {
+            string selectCmdText = string.Format("SELECT * FROM {0}", tableName); ;
+            MySqlCommand command = new MySqlCommand(selectCmdText, conn);
+            MySqlDataAdapter ad = new MySqlDataAdapter(command);
+            System.Data.DataSet ds = new DataSet();
+            ad.FillSchema(ds, SchemaType.Mapped, tableName);
+
+            Table table = new Table(ds.Tables[0]);
+            return table;
+        }
+
+        public void Dispose()
+        {
+            if (conn != null)
+                conn.Close();
+        }
+    }
+
+    public class Table
+    {
+        public Table(DataTable t)
+        {
+            this.PKs = this.GetPKList(t);
+            this.Columns = this.GetColumnList(t);
+            this.ColumnTypeNames = this.SetColumnNames();
+        }
+
+        public List<Column> PKs;
+
+        public List<Column> Columns;
+		public string PrimaryKey;
+        public string ColumnTypeNames;
+        public List<Column> GetPKList(DataTable dt)
+        {
+            List<Column> list = new List<Column>();
+            Column c = null;
+            if (dt.PrimaryKey.Length > 0)
+            {
+                list = new List<Column>();
+                foreach (DataColumn dc in dt.PrimaryKey)
+                {
+                    c = new Column(dc);
+					PrimaryKey=dc.ColumnName;
+                    list.Add(c);
+                }
+            }
+            return list;
+        }
+
+        private List<Column> GetColumnList(DataTable dt)
+        {
+            List<Column> list = new List<Column>();
+            Column c = null;
+            foreach (DataColumn dc in dt.Columns)
+            {
+                c = new Column(dc);
+                list.Add(c);
+            }
+            return list;
+        }
+
+        private string SetColumnNames()
+        {
+            List<string> list = new List<string>();
+            foreach (Column c in this.Columns)
+            {
+                list.Add(string.Format("{0} {1}", c.TypeName, c.ColumnName));
+            }
+            return string.Join(",", list.ToArray());
+        }
+    }
+
+    public class Column
+    {
+        DataColumn columnBase;
+
+        public Column(DataColumn columnBase)
+        {
+            this.columnBase = columnBase;
+        }
+
+        public string ColumnName { get { return this.columnBase.ColumnName; } }
+
+        public string MaxLength { get { return this.columnBase.MaxLength.ToString(); } }
+
+        public string TypeName { 
+            get 
+            {
+                string result = string.Empty;
+                if (this.columnBase.DataType.Name == "Guid")//for mysql,因为对于MYSQL如果是CHAR(36),类型自动为Guid
+                    result = "string";
+                else
+                    result = this.columnBase.DataType.Name;
+                //return result; 
+
+				if (string.IsNullOrEmpty(result)) return result;
+				string dbtype = result.ToLower();
+				string csharpType = "object";
+				switch (dbtype)
+				{
+					case "bigint": csharpType = "long"; break;
+					case "binary": csharpType = "byte[]"; break;
+					case "bit": csharpType = "bool"; break;
+					case "char": csharpType = "string"; break;
+					case "date": csharpType = "DateTime"; break;
+					case "datetime": csharpType = "DateTime"; break;
+					case "datetime2": csharpType = "DateTime"; break;
+					case "datetimeoffset": csharpType = "DateTimeOffset"; break;
+					case "decimal": csharpType = "decimal"; break;
+					case "float": csharpType = "double"; break;
+					case "image": csharpType = "byte[]"; break;
+					case "int": csharpType = "int"; break;
+					case "money": csharpType = "decimal"; break;
+					case "nchar": csharpType = "string"; break;
+					case "ntext": csharpType = "string"; break;
+					case "numeric": csharpType = "decimal"; break;
+					case "nvarchar": csharpType = "string"; break;
+					case "real": csharpType = "Single"; break;
+					case "smalldatetime": csharpType = "DateTime"; break;
+					case "smallint": csharpType = "short"; break;
+					case "smallmoney": csharpType = "decimal"; break;
+					case "sql_variant": csharpType = "object"; break;
+					case "sysname": csharpType = "object"; break;
+					case "text": csharpType = "string"; break;
+					case "time": csharpType = "TimeSpan"; break;
+					case "timestamp": csharpType = "byte[]"; break;
+					case "tinyint": csharpType = "byte"; break;
+					case "uniqueidentifier": csharpType = "Guid"; break;
+					case "varbinary": csharpType = "byte[]"; break;
+					case "varchar": csharpType = "string"; break;
+					case "xml": csharpType = "string"; break;
+
+					case "int32":csharpType = "int"; break;
+					case "uint32":csharpType = "int"; break;
+					case "int64":csharpType = "long"; break;
+					case "uint64":csharpType = "long"; break;
+					default: csharpType = dbtype; break;
+				}
+				return csharpType;
+
+            } 
+        }
+
+        public bool AllowDBNull { get { return this.columnBase.AllowDBNull; } }
+
+        public string UpColumnName
+        {
+            get
+            {
+                return string.Format("{0}{1}", this.ColumnName[0].ToString().ToUpper(), this.ColumnName.Substring(1));
+            }
+        }
+
+        public string LowerColumnName
+        {
+            get
+            {
+                return string.Format("{0}{1}", this.ColumnName[0].ToString().ToLower(), this.ColumnName.Substring(1));
+            }
+        }
+    }
+
+    public class GeneratorHelper
+    {
+        public static readonly string StringType = "string";
+        public static readonly string DateTimeType = "DateTime";
+        public static string GetQuesMarkByType(string typeName)
+        {
+            string result = typeName;
+            if (typeName == DateTimeType)
+            {
+                result += "?";
+            }
+            return result;
+        }
+    }
+
+    #endregion
+#>
